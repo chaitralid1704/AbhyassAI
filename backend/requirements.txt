@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+firebase-admin
+pypdf2
+python-multipart
+google-generativeai
+pydantic-settings
