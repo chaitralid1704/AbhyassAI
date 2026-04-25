@@ -13,6 +13,9 @@ import tempfile
 import uuid
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
+import base64
+import io
+from gtts import gTTS
 import google.generativeai as genai
 from pydantic_settings import BaseSettings, SettingsConfigDict
 import smtplib
@@ -99,7 +102,7 @@ def parse_json_res(text):
 
 if settings.gemini_api_key:
     genai.configure(api_key=settings.gemini_api_key)
-    print("✅ GEMINI_API_KEY loaded successfully")
+    print("GEMINI_API_KEY loaded successfully")
 else:
     print("WARNING: GEMINI_API_KEY not found in environment or .env!")
 
@@ -832,6 +835,22 @@ class TutorChatRequest(BaseModel):
     uid: str
     message: str
 
+class TutorTTSRequest(BaseModel):
+    text: str
+
+@app.post("/api/tutor/tts")
+async def tutor_tts(request: TutorTTSRequest):
+    """Convert arbitrary text to speech and return as base64 MP3 data URI."""
+    try:
+        tts = gTTS(text=request.text, lang='en')
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        fp.seek(0)
+        audio_b64 = base64.b64encode(fp.read()).decode('utf-8')
+        return {"audio_data": f"data:audio/mp3;base64,{audio_b64}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"TTS failed: {e}")
+
 @app.post("/api/heygen-token")
 async def generate_heygen_token():
     if not settings.heygen_api_key:
@@ -882,7 +901,18 @@ Do not use emojis or complex markdown formatting as your text will be spoken out
             model = genai.GenerativeModel(m_name)
             response = model.generate_content(prompt)
             if response and response.text:
-                return {"reply": response.text.strip()}
+                reply_text = response.text.strip()
+                audio_data = ""
+                try:
+                    tts = gTTS(text=reply_text, lang='en')
+                    fp = io.BytesIO()
+                    tts.write_to_fp(fp)
+                    fp.seek(0)
+                    audio_b64 = base64.b64encode(fp.read()).decode('utf-8')
+                    audio_data = f"data:audio/mp3;base64,{audio_b64}"
+                except Exception as e:
+                    print(f"TTS Error: {e}")
+                return {"reply": reply_text, "audio_data": audio_data}
         except Exception as e:
             last_error = str(e)
             continue
