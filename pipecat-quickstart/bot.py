@@ -119,8 +119,9 @@ async def run_bot(transport, runner_args: RunnerArguments):
         heygen = HeyGenVideoService(
             api_key=os.getenv("HEYGEN_API_KEY"),
             session=session,
-            session_request=NewSessionRequest(avatar_id="7f8f135a6fbc470c933ad51861c893fb")
+            session_request=NewSessionRequest(avatar_id="Diora_public_2")
         )
+
         logger.info("HeyGen service initialized")
         pipeline = Pipeline(
             [

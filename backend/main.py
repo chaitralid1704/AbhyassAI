@@ -13,9 +13,6 @@ import tempfile
 import uuid
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
-import base64
-import io
-from gtts import gTTS
 import google.generativeai as genai
 from pydantic_settings import BaseSettings, SettingsConfigDict
 import smtplib
@@ -71,13 +68,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from pydantic import SecretStr
+
 # Configuration for Gemini AI
 class Settings(BaseSettings):
-    gemini_api_key: str = ""
+    gemini_api_key: SecretStr
     email_user: str = ""
     email_pass: str = ""
-    heygen_api_key: str = "sk_V2_hgu_kSMjRD4wWbn_H2UnYqaCOjnZQgabBaFfwINik9VmWlpc"
+    liveavatar_api_key: SecretStr
+    
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
 
 settings = Settings()
 
@@ -101,10 +102,13 @@ def parse_json_res(text):
         return None
 
 if settings.gemini_api_key:
-    genai.configure(api_key=settings.gemini_api_key)
-    print("GEMINI_API_KEY loaded successfully")
+    genai.configure(api_key=settings.gemini_api_key.get_secret_value())
+    print("[OK] GEMINI_API_KEY loaded successfully")
+if settings.liveavatar_api_key:
+    print(f"[OK] LIVEAVATAR_API_KEY=0484a605-416b-11f1-8d28-066a7fa2e369")
 else:
-    print("WARNING: GEMINI_API_KEY not found in environment or .env!")
+    print("[ERROR] LIVEAVATAR_API_KEY NOT found in .env!")
+
 
 # Initialize Firebase Admin SDK
 cred_path = "serviceAccountKey.json"
@@ -661,17 +665,31 @@ def send_email(to_email, subject, body):
 async def notify_parents_if_weak(student_id: str, topic: str):
     if db is None: return
     
-    # 1. Check if student is actually in a red zone for this topic
+    # 1. Fetch recent attempts for this topic
     docs = db.collection("users").document(student_id).collection("quiz_attempts")\
              .where("topic", "==", topic)\
              .order_by("timestamp", direction=firestore.Query.DESCENDING).limit(3).get()
     
-    if len(docs) < 3: return
+    if not docs: return
     
-    accs = [d.to_dict().get("accuracy", 0) for d in docs]
-    avg = sum(accs) / len(accs)
+    attempts = [d.to_dict() for d in docs]
+    current_accuracy = attempts[0].get("accuracy", 0)
+    avg_accuracy = sum([a.get("accuracy", 0) for a in attempts]) / len(attempts)
     
-    if avg < 45: # Threshold for notification
+    # Trigger criteria:
+    # - Current attempt is very poor (< 40%)
+    # - OR the average of last 3 attempts is poor (< 50%) and there are at least 2 attempts
+    should_notify = False
+    reason = ""
+    
+    if current_accuracy < 40:
+        should_notify = True
+        reason = f"Current score: {current_accuracy}%"
+    elif len(attempts) >= 2 and avg_accuracy < 50:
+        should_notify = True
+        reason = f"Average score over last {len(attempts)} attempts: {avg_accuracy:.1f}%"
+
+    if should_notify:
         # 2. Find linked parents
         links = db.collection("parent_student_links").where("studentId", "==", student_id).stream()
         student_doc = db.collection("users").document(student_id).get()
@@ -683,17 +701,21 @@ async def notify_parents_if_weak(student_id: str, topic: str):
             if parent_doc.exists:
                 parent_email = parent_doc.to_dict().get("email")
                 if parent_email:
-                    print(f"📧 Notifying parent {parent_email} about {topic}...")
+                    print(f"📧 Notifying parent {parent_email} about {topic} (Reason: {reason})...")
                     subject = f"🚨 Academic Alert: {student_name}'s Progress in {topic}"
                     body = f"""
-                    <div style="font-family: sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-                        <h2 style="color: #d32f2f;">Academic Progress Alert</h2>
+                    <div style="font-family: sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px; max-width: 600px;">
+                        <h2 style="color: #d32f2f; margin-top: 0;">Academic Progress Alert</h2>
                         <p>Hello,</p>
-                        <p>Our AI system has detected that <b>{student_name}</b> is consistently struggling with the topic: <b>{topic}</b>.</p>
-                        <p><b>Performance Detail:</b> Average score of {avg:.1f}% over the last 3 attempts.</p>
-                        <hr/>
-                        <p>We recommend checking the <a href="http://localhost:3000/dashboard">Parent Dashboard</a> for specific AI-generated study suggestions to help them bridge this gap.</p>
-                        <p style="font-size: 12px; color: #777;">Sent automatically by Abhyas AI Sanctuary.</p>
+                        <p>Our AI system has detected that <b>{student_name}</b> is currently struggling with the topic: <b>{topic}</b>.</p>
+                        
+                        <div style="background-color: #fff5f5; padding: 15px; border-left: 4px solid #d32f2f; margin: 20px 0;">
+                            <p style="margin: 0;"><b>Performance Detail:</b> {reason}</p>
+                        </div>
+                        
+                        <p>We recommend checking the <a href="http://localhost:3000/dashboard" style="color: #1976d2; text-decoration: none; font-weight: bold;">Parent Dashboard</a> for specific AI-generated study suggestions to help them bridge this gap.</p>
+                        <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;" />
+                        <p style="font-size: 12px; color: #777; margin-bottom: 0;">Sent automatically by Abhyas AI Sanctuary.</p>
                     </div>
                     """
                     send_email(parent_email, subject, body)
@@ -835,37 +857,53 @@ class TutorChatRequest(BaseModel):
     uid: str
     message: str
 
-class TutorTTSRequest(BaseModel):
-    text: str
-
-@app.post("/api/tutor/tts")
-async def tutor_tts(request: TutorTTSRequest):
-    """Convert arbitrary text to speech and return as base64 MP3 data URI."""
-    try:
-        tts = gTTS(text=request.text, lang='en')
-        fp = io.BytesIO()
-        tts.write_to_fp(fp)
-        fp.seek(0)
-        audio_b64 = base64.b64encode(fp.read()).decode('utf-8')
-        return {"audio_data": f"data:audio/mp3;base64,{audio_b64}"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"TTS failed: {e}")
-
 @app.post("/api/heygen-token")
 async def generate_heygen_token():
-    if not settings.heygen_api_key:
-        raise HTTPException(status_code=500, detail="HeyGen API Key not configured")
+    if not settings.liveavatar_api_key:
+        raise HTTPException(status_code=500, detail="LiveAvatar API Key not configured")
     try:
+        # v2/embeddings endpoint specifically for Sandbox/Free sessions
+        payload = {
+            "avatar_id": "65f9e3c9-d48b-4118-b73a-4ae2e3cbb8f0",
+            "context_id": "158f5d55-2d4f-11f1-8d28-066a7fa2e369",
+            "is_sandbox": True
+        }
+
+        
         req = urllib.request.Request(
-            "https://api.heygen.com/v1/streaming.create_token",
+            "https://api.liveavatar.com/v2/embeddings",
             method="POST",
-            headers={"x-api-key": settings.heygen_api_key}
+            headers={
+                "X-API-KEY": settings.liveavatar_api_key.get_secret_value(),
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json"
+            },
+            data=json.dumps(payload).encode()
         )
+
         with urllib.request.urlopen(req) as response:
-            data = json.loads(response.read().decode())
-            return {"token": data["data"]["token"]}
+            resp_data = json.loads(response.read().decode())
+            embed_url = resp_data.get("data", {}).get("url")
+            if not embed_url:
+                raise Exception(f"No URL in response: {resp_data}")
+            return {"url": embed_url}
+
+
+
+
+
+
+
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode()
+        print(f"HEYGEN API ERROR ({e.code}): {error_body}")
+        raise HTTPException(status_code=500, detail=f"HeyGen API Error: {error_body}")
     except Exception as e:
+        print(f"HEYGEN TOKEN EXCEPTION: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/tutor/chat")
 async def tutor_chat(request: TutorChatRequest):
@@ -901,18 +939,7 @@ Do not use emojis or complex markdown formatting as your text will be spoken out
             model = genai.GenerativeModel(m_name)
             response = model.generate_content(prompt)
             if response and response.text:
-                reply_text = response.text.strip()
-                audio_data = ""
-                try:
-                    tts = gTTS(text=reply_text, lang='en')
-                    fp = io.BytesIO()
-                    tts.write_to_fp(fp)
-                    fp.seek(0)
-                    audio_b64 = base64.b64encode(fp.read()).decode('utf-8')
-                    audio_data = f"data:audio/mp3;base64,{audio_b64}"
-                except Exception as e:
-                    print(f"TTS Error: {e}")
-                return {"reply": reply_text, "audio_data": audio_data}
+                return {"reply": response.text.strip()}
         except Exception as e:
             last_error = str(e)
             continue

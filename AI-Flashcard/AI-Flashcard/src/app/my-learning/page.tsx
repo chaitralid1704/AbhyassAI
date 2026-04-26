@@ -53,6 +53,8 @@ export default function MyLearning() {
   const [activeTaskForQuiz, setActiveTaskForQuiz] = useState<any | null>(null);
   const [roadmapTaskIndex, setRoadmapTaskIndex] = useState(0); // Tracks current week in roadmap
   const [showRoadmapDetail, setShowRoadmapDetail] = useState(false); // Collapsed by default
+  const [correctAnswers, setCorrectAnswers] = useState(0); // Track real quiz performance
+
 
 
   useEffect(() => {
@@ -282,8 +284,10 @@ export default function MyLearning() {
       setQuizQuestions([]);
       setCurrentQuestionIdx(0);
       setQuizScore(null);
+      setCorrectAnswers(0);
       setSelectedAnswer(null);
       setShowExplanation(false);
+
       
       try {
           const res = await fetch("http://127.0.0.1:8000/api/learning/roadmap/quiz", {
@@ -310,18 +314,20 @@ export default function MyLearning() {
       
       const current = quizQuestions[currentQuestionIdx];
       if (option === current.answer) {
+          setCorrectAnswers(prev => prev + 1);
           toast.success("Correct!", { icon: '🎯' });
       } else {
           toast.error("Incorrect", { icon: '❌' });
       }
+
   };
 
   const nextQuestion = async () => {
       const isLast = currentQuestionIdx === quizQuestions.length - 1;
       if (isLast) {
           // Calculate score based on actual correct answers
-          // (For now we simulate a high score for testing, but in a real app we'd track selection)
-          const finalScore = Math.floor(Math.random() * 41) + 60; // 60-100%
+          const finalScore = Math.round((correctAnswers / quizQuestions.length) * 100);
+
           
           if (activeTaskForQuiz) {
               try {
@@ -340,8 +346,9 @@ export default function MyLearning() {
               } catch (e) { console.error("Sync failed", e); }
           }
 
-          setQuizScore({ correct: Math.round((finalScore/100) * quizQuestions.length), total: quizQuestions.length });
+          setQuizScore({ correct: correctAnswers, total: quizQuestions.length });
           toast.success("Checkup Complete!");
+
           setActiveTaskForQuiz(null);
       } else {
           setCurrentQuestionIdx(prev => prev + 1);
@@ -357,8 +364,10 @@ export default function MyLearning() {
       setQuizQuestions([]);
       setCurrentQuestionIdx(0);
       setQuizScore(null);
+      setCorrectAnswers(0);
       setSelectedAnswer(null);
       setShowExplanation(false);
+
       
       try {
           const res = await fetch("http://127.0.0.1:8000/api/learning/roadmap/quiz", {

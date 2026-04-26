@@ -54,3 +54,7 @@ serviceAccountKey.json
 
 # Project Specific
 Stitch_Downloads/
+brain/
+knowledge/
+artifacts/
+.gemini/
